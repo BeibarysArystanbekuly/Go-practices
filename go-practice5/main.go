@@ -9,27 +9,29 @@ import (
 	"strings"
 	"time"
 
-	_ "github.com/mattn/go-sqlite3"
+	_ "github.com/glebarez/sqlite"
 )
 
 type Job struct {
-	ID        int
-	Title     string
-	Company   string
-	Salary    int
-	CreatedAt time.Time
+	ID        int       `json:"id"`
+	Title     string    `json:"title"`
+	Company   string    `json:"company"`
+	Salary    int       `json:"salary"`
+	CreatedAt time.Time `json:"created_at"`
 }
 
 type JobsResponse struct {
-	Items       []Job
-	NextAfterID int
+	Items       []Job `json:"items"`
+	NextAfterID int   `json:"next_after_id"`
 }
 
 var db *sql.DB
 
 func main() {
 	var err error
-	db, _ := sql.Open("sqlite", "jobs.db")
+
+	// открываем БД через чисто-Go драйвер
+	db, err = sql.Open("sqlite", "jobs.db")
 	if err != nil {
 		log.Fatalf("open db: %v", err)
 	}
@@ -40,36 +42,54 @@ func main() {
 	}
 
 	createTable := `
-    CREATE TABLE IF NOT EXISTS jobs (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        title TEXT NOT NULL,
-        company TEXT NOT NULL,
-        salary INTEGER NOT NULL,
-        created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
-    )`
+	CREATE TABLE IF NOT EXISTS jobs (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		title TEXT NOT NULL,
+		company TEXT NOT NULL,
+		salary INTEGER NOT NULL,
+		created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+	);`
 
 	if _, err := db.Exec(createTable); err != nil {
 		log.Fatalf("create table: %v", err)
 	}
 
-	sampleData := `
-    INSERT OR IGNORE INTO jobs (title, company, salary, created_at) VALUES 
-    ('Senior Go Developer', 'Kolesa', 615000, datetime('now')),
-    ('Python Developer', 'Kaspi', 550000, datetime('now', '-1 day')),
-    ('Java Developer', 'Kolesa', 580000, datetime('now', '-2 days')),
-    ('Frontend Developer', 'Arbuz', 450000, datetime('now', '-3 days'));
-	('DevOps Engineer', 'ChocoFamily', 600000, datetime('now', '-4 days'));
-	('Data Analyst', 'Kolesa', 500000, datetime('now', '-5 days'));
-	`
-
-	if _, err := db.Exec(sampleData); err != nil {
-		log.Printf("warning: could not insert sample data: %v", err)
-	}
+	// добавим тестовые данные, но аккуратно — по одному INSERT
+	insertSamples()
 
 	http.HandleFunc("/jobs", handleJobs)
+
 	log.Printf("Server starting on :8080")
 	if err := http.ListenAndServe(":8080", nil); err != nil {
 		log.Fatalf("server error: %v", err)
+	}
+}
+
+func insertSamples() {
+	// INSERT OR IGNORE с фиксированными id, чтобы не дублировать
+	samples := []struct {
+		title   string
+		company string
+		salary  int
+	}{
+		{"Senior Go Developer", "Kolesa", 615000},
+		{"Python Developer", "Kaspi", 550000},
+		{"Java Developer", "Kolesa", 580000},
+		{"Frontend Developer", "Arbuz", 450000},
+		{"DevOps Engineer", "ChocoFamily", 600000},
+		{"Data Analyst", "Kolesa", 500000},
+	}
+
+	for _, s := range samples {
+		_, err := db.Exec(
+			`INSERT INTO jobs (title, company, salary, created_at)
+			 VALUES (?, ?, ?, datetime('now'))`,
+			s.title, s.company, s.salary,
+		)
+		if err != nil {
+			// не критично, просто пишем
+			log.Printf("warning: insert sample failed: %v", err)
+		}
 	}
 }
 
@@ -99,8 +119,9 @@ func handleJobs(w http.ResponseWriter, r *http.Request) {
 	conditions := make([]string, 0)
 
 	baseQuery := `
-        SELECT id, title, company, salary, created_at 
-        FROM jobs`
+		SELECT id, title, company, salary, created_at
+		FROM jobs
+	`
 
 	if company != "" {
 		conditions = append(conditions, "company = ?")
@@ -111,9 +132,14 @@ func handleJobs(w http.ResponseWriter, r *http.Request) {
 		afterIDInt, err := strconv.Atoi(afterID)
 		if err == nil && afterIDInt > 0 {
 			conditions = append(conditions, `
-                (created_at < (SELECT created_at FROM jobs WHERE id = ?) 
-                OR (created_at = (SELECT created_at FROM jobs WHERE id = ?) 
-                AND id < ?))`)
+				(
+					created_at < (SELECT created_at FROM jobs WHERE id = ?)
+					OR (
+						created_at = (SELECT created_at FROM jobs WHERE id = ?)
+						AND id < ?
+					)
+				)
+			`)
 			args = append(args, afterIDInt, afterIDInt, afterIDInt)
 		}
 	}

@@ -1,0 +1,17 @@
+version: '3.8'
+
+services:
+  db:
+    image: postgres:16
+    container_name: polling_db
+    environment:
+      POSTGRES_USER: polling_user
+      POSTGRES_PASSWORD: polling_pass
+      POSTGRES_DB: polling_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - db-data:/var/lib/postgresql/data
+
+volumes:
+  db-data:
