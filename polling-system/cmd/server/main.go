@@ -2,7 +2,7 @@ package main
 
 import (
 	"context"
-	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
@@ -14,6 +14,7 @@ import (
 	"polling-system/internal/domain/user"
 	"polling-system/internal/domain/vote"
 	api "polling-system/internal/http"
+	"polling-system/internal/metrics"
 	"polling-system/internal/platform/database"
 	jwtpkg "polling-system/internal/platform/jwt"
 	"polling-system/internal/repository/postgres"
@@ -28,11 +29,17 @@ import (
 // @in              header
 // @name            Authorization
 func main() {
+	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+	slog.SetDefault(logger)
+	api.SetLogger(logger)
+
 	cfg := config.Load()
+	metrics.Register()
 
 	db, err := database.NewPostgres(cfg.DB_DSN)
 	if err != nil {
-		log.Fatalf("db connect error: %v", err)
+		logger.Error("db connect error", "error", err)
+		os.Exit(1)
 	}
 	defer db.Close()
 
@@ -47,7 +54,7 @@ func main() {
 	jwtMgr := jwtpkg.NewManager(cfg.JWTSecret)
 
 	voteCh := make(chan worker.VoteEvent, 100)
-	statsWorker := worker.NewStatsWorker(voteCh, voteRepo)
+	statsWorker := worker.NewStatsWorker(voteCh, voteRepo, logger)
 
 	router := api.NewRouter(userSvc, pollSvc, voteSvc, jwtMgr, voteCh)
 
@@ -62,9 +69,10 @@ func main() {
 	go statsWorker.Run(ctx)
 
 	go func() {
-		log.Printf("server listening on :%s", cfg.Port)
+		logger.Info("server listening", "port", cfg.Port)
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("listen error: %v", err)
+			logger.Error("listen error", "error", err)
+			os.Exit(1)
 		}
 	}()
 
@@ -72,7 +80,7 @@ func main() {
 	signal.Notify(stop, os.Interrupt)
 
 	<-stop
-	log.Println("shutting down...")
+	logger.Info("shutting down...")
 
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer shutdownCancel()
@@ -80,8 +88,9 @@ func main() {
 	cancel()
 
 	if err := srv.Shutdown(shutdownCtx); err != nil {
-		log.Fatalf("server shutdown error: %v", err)
+		logger.Error("server shutdown error", "error", err)
+		os.Exit(1)
 	}
 
-	log.Println("server stopped")
+	logger.Info("server stopped")
 }

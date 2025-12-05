@@ -8,7 +8,8 @@ import (
 )
 
 var (
-	ErrAlreadyVoted = errors.New("user already voted in this poll")
+	ErrAlreadyVoted  = errors.New("user already voted in this poll")
+	ErrPollNotActive = errors.New("poll is not active")
 )
 
 type Service struct {
@@ -27,19 +28,27 @@ type cachedResult struct {
 func NewService(repo Repository) *Service {
 	return &Service{
 		repo:     repo,
-		cacheTTL: 30 * time.Second,
+		cacheTTL: 10 * time.Second,
 		cache:    make(map[int64]cachedResult),
 	}
 }
 
 func (s *Service) Vote(ctx context.Context, pollID, optionID, userID int64) error {
+	status, err := s.repo.GetPollStatus(ctx, pollID)
+	if err != nil {
+		return err
+	}
+	if status != "active" {
+		return ErrPollNotActive
+	}
+
 	v := &Vote{
 		PollID:   pollID,
 		OptionID: optionID,
 		UserID:   userID,
 	}
 
-	err := s.repo.Create(ctx, v)
+	err = s.repo.Create(ctx, v)
 	if err != nil {
 		if errors.Is(err, ErrAlreadyVoted) {
 			return ErrAlreadyVoted

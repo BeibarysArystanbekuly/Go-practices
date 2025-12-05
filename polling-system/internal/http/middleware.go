@@ -2,7 +2,8 @@ package api
 
 import (
 	"context"
-	"fmt"
+	"log/slog"
+	"net"
 	"net/http"
 	"strings"
 	"sync"
@@ -10,7 +11,9 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	chimw "github.com/go-chi/chi/v5/middleware"
+	"golang.org/x/time/rate"
 
+	"polling-system/internal/metrics"
 	jwtpkg "polling-system/internal/platform/jwt"
 )
 
@@ -21,7 +24,13 @@ const (
 	ctxKeyRole   ctxKey = "role"
 )
 
-var metrics = newMetricsCollector()
+var slogLogger = slog.Default()
+
+func SetLogger(l *slog.Logger) {
+	if l != nil {
+		slogLogger = l
+	}
+}
 
 func AuthMiddleware(jm *jwtpkg.Manager) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
@@ -76,7 +85,7 @@ func userIDFromCtx(r *http.Request) int64 {
 func CORSMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type")
+		w.Header().Set("Access-Control-Allow-Headers", "Accept, Authorization, Content-Type")
 		w.Header().Set("Access-Control-Allow-Methods", "GET,POST,PATCH,OPTIONS")
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
@@ -86,15 +95,12 @@ func CORSMiddleware(next http.Handler) http.Handler {
 	})
 }
 
-func RateLimitPerUser(limit int, window time.Duration) func(http.Handler) http.Handler {
-	limiter := newRateLimiter(limit, window)
+func RateLimitVotes(r rate.Limit, burst int) func(http.Handler) http.Handler {
+	limiter := newIPRateLimiter(r, burst, 10*time.Minute)
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			key := r.RemoteAddr
-			if id := userIDFromCtx(r); id > 0 {
-				key = fmt.Sprintf("user:%d", id)
-			}
-			if !limiter.allow(key) {
+			ip := clientIP(r)
+			if !limiter.allow(ip) {
 				http.Error(w, "too many requests", http.StatusTooManyRequests)
 				return
 			}
@@ -103,7 +109,7 @@ func RateLimitPerUser(limit int, window time.Duration) func(http.Handler) http.H
 	}
 }
 
-func MetricsMiddleware(next http.Handler) http.Handler {
+func RequestLogger(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 		rw := chimw.NewWrapResponseWriter(w, r.ProtoMajor)
@@ -118,101 +124,71 @@ func MetricsMiddleware(next http.Handler) http.Handler {
 			route = rc.RoutePattern()
 		}
 
-		metrics.record(route, r.Method, status, time.Since(start))
+		metrics.IncRequest(r.Method, route, status)
+
+		slogLogger.Info("request",
+			"method", r.Method,
+			"path", route,
+			"status", status,
+			"duration_ms", time.Since(start).Milliseconds(),
+		)
 	})
 }
 
-func MetricsHandler(w http.ResponseWriter, r *http.Request) {
-	snapshot := metrics.snapshot()
-	w.Header().Set("Content-Type", "text/plain; version=0.0.4")
-	for key, m := range snapshot {
-		fmt.Fprintf(w, "polling_requests_total{path=\"%s\",method=\"%s\",status=\"%d\"} %d\n",
-			key.Path, key.Method, key.Status, m.Count)
-		fmt.Fprintf(w, "polling_request_duration_ms_sum{path=\"%s\",method=\"%s\",status=\"%d\"} %d\n",
-			key.Path, key.Method, key.Status, m.Latency/time.Millisecond)
-		fmt.Fprintf(w, "polling_request_duration_ms_count{path=\"%s\",method=\"%s\",status=\"%d\"} %d\n",
-			key.Path, key.Method, key.Status, m.Count)
+type ipRateLimiter struct {
+	mu       sync.Mutex
+	limiters map[string]*rate.Limiter
+	lastSeen map[string]time.Time
+	limit    rate.Limit
+	burst    int
+	entryTTL time.Duration
+}
+
+func newIPRateLimiter(limit rate.Limit, burst int, entryTTL time.Duration) *ipRateLimiter {
+	return &ipRateLimiter{
+		limiters: make(map[string]*rate.Limiter),
+		lastSeen: make(map[string]time.Time),
+		limit:    limit,
+		burst:    burst,
+		entryTTL: entryTTL,
 	}
 }
 
-type metricKey struct {
-	Path   string
-	Method string
-	Status int
-}
+func (l *ipRateLimiter) getLimiter(ip string) *rate.Limiter {
+	l.mu.Lock()
+	defer l.mu.Unlock()
 
-type metricEntry struct {
-	Count   uint64
-	Latency time.Duration
-}
-
-type metricsCollector struct {
-	mu      sync.Mutex
-	entries map[metricKey]metricEntry
-}
-
-func newMetricsCollector() *metricsCollector {
-	return &metricsCollector{
-		entries: make(map[metricKey]metricEntry),
-	}
-}
-
-func (m *metricsCollector) record(path, method string, status int, dur time.Duration) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	key := metricKey{Path: path, Method: method, Status: status}
-	entry := m.entries[key]
-	entry.Count++
-	entry.Latency += dur
-	m.entries[key] = entry
-}
-
-func (m *metricsCollector) snapshot() map[metricKey]metricEntry {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	res := make(map[metricKey]metricEntry, len(m.entries))
-	for k, v := range m.entries {
-		res[k] = v
-	}
-	return res
-}
-
-type rateLimiter struct {
-	mu     sync.Mutex
-	window time.Duration
-	limit  int
-	hits   map[string]rateState
-}
-
-type rateState struct {
-	count int
-	reset time.Time
-}
-
-func newRateLimiter(limit int, window time.Duration) *rateLimiter {
-	return &rateLimiter{
-		window: window,
-		limit:  limit,
-		hits:   make(map[string]rateState),
-	}
-}
-
-func (r *rateLimiter) allow(key string) bool {
 	now := time.Now()
-
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	state := r.hits[key]
-	if now.After(state.reset) {
-		state = rateState{count: 0, reset: now.Add(r.window)}
+	for key, ts := range l.lastSeen {
+		if now.Sub(ts) > l.entryTTL {
+			delete(l.limiters, key)
+			delete(l.lastSeen, key)
+		}
 	}
-	if state.count >= r.limit {
-		return false
+
+	if limiter, ok := l.limiters[ip]; ok {
+		l.lastSeen[ip] = now
+		return limiter
 	}
-	state.count++
-	r.hits[key] = state
-	return true
+	limiter := rate.NewLimiter(l.limit, l.burst)
+	l.limiters[ip] = limiter
+	l.lastSeen[ip] = now
+	return limiter
+}
+
+func (l *ipRateLimiter) allow(ip string) bool {
+	limiter := l.getLimiter(ip)
+	return limiter.Allow()
+}
+
+func clientIP(r *http.Request) string {
+	if xfwd := r.Header.Get("X-Forwarded-For"); xfwd != "" {
+		parts := strings.Split(xfwd, ",")
+		return strings.TrimSpace(parts[0])
+	}
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr
+	}
+	return host
 }

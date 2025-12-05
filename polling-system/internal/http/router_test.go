@@ -198,6 +198,10 @@ func (noopVoteRepo) IncrementAggregated(ctx context.Context, pollID, optionID in
 	return nil
 }
 
+func (noopVoteRepo) GetPollStatus(ctx context.Context, pollID int64) (string, error) {
+	return "active", nil
+}
+
 func TestLoginAndCreatePoll(t *testing.T) {
 	userRepo := newTestUserRepo()
 	pollRepo := newTestPollRepo()

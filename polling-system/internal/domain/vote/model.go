@@ -18,4 +18,5 @@ type Repository interface {
 	CountByPoll(ctx context.Context, pollID int64) (map[int64]int64, int64, error)
 	AggregatedByPoll(ctx context.Context, pollID int64) (map[int64]int64, int64, error)
 	IncrementAggregated(ctx context.Context, pollID, optionID int64) error
+	GetPollStatus(ctx context.Context, pollID int64) (string, error)
 }

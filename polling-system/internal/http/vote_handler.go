@@ -46,7 +46,11 @@ func (h *Handler) handleVote(w http.ResponseWriter, r *http.Request) {
 
 	if err := h.voteSvc.Vote(r.Context(), pollID, req.OptionID, userID); err != nil {
 		if err == vote.ErrAlreadyVoted {
-			http.Error(w, "already voted", http.StatusBadRequest)
+			http.Error(w, "already voted", http.StatusConflict)
+			return
+		}
+		if err == vote.ErrPollNotActive {
+			http.Error(w, "poll not active", http.StatusBadRequest)
 			return
 		}
 		http.Error(w, "server error", http.StatusInternalServerError)
@@ -54,7 +58,7 @@ func (h *Handler) handleVote(w http.ResponseWriter, r *http.Request) {
 	}
 
 	select {
-	case h.voteCh <- worker.VoteEvent{PollID: pollID, OptionID: req.OptionID}:
+	case h.voteCh <- worker.VoteEvent{PollID: pollID, OptionID: req.OptionID, UserID: userID}:
 	default:
 	}
 

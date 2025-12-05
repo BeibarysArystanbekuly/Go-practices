@@ -1,66 +1,94 @@
 # Polling / Voting System (Go)
 
-Simple REST API for polls and voting, built in Go with Postgres and Docker.
+JSON REST API for creating polls and casting votes. The stack is Go + chi + Postgres, with JWT authentication, worker pool, metrics, and Docker support.
 
 ## Requirements
 
 - Go (64-bit, recommended 1.22+)
 - Docker + Docker Compose
 
-## Quick start
+## Project structure
 
-1. Start Postgres:
+- `cmd/server` – entrypoint
+- `internal/config` – env/config loading
+- `internal/domain` – domain models and services
+- `internal/repository/postgres` – Postgres repositories
+- `internal/http` – router, handlers, middleware
+- `internal/worker` – vote aggregation worker pool
+- `internal/metrics` – Prometheus counters
+- `internal/db/migrations` – SQL migrations
+- `docs` – Swagger docs
 
-   ```bash
-   docker compose up -d db
-   ```
+## Running Postgres
 
-2. Install Go dependencies:
+```bash
+docker compose up -d db
+```
 
-   ```bash
-   go mod tidy
-   ```
+## Migrations (golang-migrate CLI)
 
-3. Apply migrations (recommended: [golang-migrate](https://github.com/golang-migrate/migrate)):
+```bash
+migrate -path internal/db/migrations \
+  -database "postgres://polling_user:polling_pass@localhost:5432/polling_db?sslmode=disable" \
+  up
+```
 
-   ```bash
-   migrate -path internal/db/migrations -database "postgres://polling_user:polling_pass@localhost:5432/polling_db?sslmode=disable" up
-   ```
+Tables: `users`, `polls`, `options`, `votes`, `aggregated_results`, indexes, and a seeded admin (`admin@example.com`).
 
-   The migrations create users/polls/options/votes plus aggregation tables and indexes; a default admin (`admin@example.com` / password hash) is seeded.
+## Run the API locally
 
-4. Run the server:
+```bash
+export APP_PORT=8080
+export DB_DSN="postgres://polling_user:polling_pass@localhost:5432/polling_db?sslmode=disable"
+export JWT_SECRET="super-secret-change-me"
+go run ./cmd/server
+```
 
-   ```bash
-   go run ./cmd/server
-   ```
+Health check: `curl http://localhost:8080/health`
 
-5. Test health endpoint:
+Swagger UI: `http://localhost:8080/swagger/index.html`
 
-   ```bash
-   curl http://localhost:8080/health
-   ```
+Prometheus metrics: `http://localhost:8080/metrics`
 
-## Basic API
+## Docker
 
+Build and run the app container (expects the `db` compose service):
+
+```bash
+docker build -t polling-system .
+docker run --rm -p 8080:8080 --env DB_DSN="postgres://polling_user:polling_pass@db:5432/polling_db?sslmode=disable" polling-system
+```
+
+## Testing
+
+```bash
+go test ./...
+```
+
+## API overview
+
+Public:
 - `POST /api/v1/auth/register`
 - `POST /api/v1/auth/login`
+
+Authenticated:
 - `GET  /api/v1/polls`
 - `GET  /api/v1/polls/{id}`
 - `POST /api/v1/polls/{id}/vote`
 - `GET  /api/v1/polls/{id}/results`
-- `GET  /metrics` (Prometheus-style plain-text metrics)
 
 Admin-only:
-
 - `POST  /api/v1/polls`
 - `PATCH /api/v1/polls/{id}/status`
 - `GET   /api/v1/users`
 - `PATCH /api/v1/users/{id}/role`
 
-### Notes on behavior
+## Behavior and reliability
 
-- JWT auth (roles: `admin`, `user`), password hashing (bcrypt).
-- Vote endpoint is rate-limited per user to reduce spam; duplicate votes are rejected idempotently.
-- Background worker pool consumes vote events and maintains aggregated results with retry/backoff.
-- Results endpoint caches responses briefly to offload the database.
+- JWT auth with roles (`admin`, `user`), bcrypt password hashing.
+- Voting is idempotent per poll/user via DB unique constraint; duplicate votes return HTTP 409.
+- Poll must be `active` to accept votes; `draft`/`closed` votes are rejected.
+- In-memory cache (10s TTL) for poll results with invalidation on new votes.
+- Rate limiting on the vote endpoint (per-IP limiter) plus CORS and structured request logging.
+- Worker pool consumes vote events and updates aggregated results with retry + backoff.
+- Prometheus counter `polling_http_requests_total` (method/path/status) exposed at `/metrics`.

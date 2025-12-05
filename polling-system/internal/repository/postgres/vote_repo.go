@@ -98,6 +98,12 @@ func (r *VoteRepo) IncrementAggregated(ctx context.Context, pollID, optionID int
 	return err
 }
 
+func (r *VoteRepo) GetPollStatus(ctx context.Context, pollID int64) (string, error) {
+	var status string
+	err := r.db.QueryRowContext(ctx, `SELECT status FROM polls WHERE id = $1`, pollID).Scan(&status)
+	return status, err
+}
+
 func isUniqueViolation(err error) bool {
 	var pgErr *pgconn.PgError
 	if errors.As(err, &pgErr) {

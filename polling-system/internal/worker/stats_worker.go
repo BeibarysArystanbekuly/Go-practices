@@ -2,14 +2,17 @@ package worker
 
 import (
 	"context"
-	"log"
+	"log/slog"
 	"sync"
 	"time"
+
+	"polling-system/internal/retry"
 )
 
 type VoteEvent struct {
 	PollID   int64
 	OptionID int64
+	UserID   int64
 }
 
 type Aggregator interface {
@@ -17,23 +20,26 @@ type Aggregator interface {
 }
 
 type StatsWorker struct {
-	Ch         <-chan VoteEvent
-	agg        Aggregator
-	workers    int
-	retryDelay time.Duration
+	Ch      <-chan VoteEvent
+	agg     Aggregator
+	workers int
+	logger  *slog.Logger
 }
 
-func NewStatsWorker(ch <-chan VoteEvent, agg Aggregator) *StatsWorker {
+func NewStatsWorker(ch <-chan VoteEvent, agg Aggregator, logger *slog.Logger) *StatsWorker {
 	return &StatsWorker{
-		Ch:         ch,
-		agg:        agg,
-		workers:    2,
-		retryDelay: 150 * time.Millisecond,
+		Ch:      ch,
+		agg:     agg,
+		workers: 4,
+		logger:  logger,
 	}
 }
 
 func (w *StatsWorker) Run(ctx context.Context) {
-	log.Println("stats worker pool started")
+	if w.logger == nil {
+		w.logger = slog.Default()
+	}
+	w.logger.Info("stats worker pool started", "workers", w.workers)
 	var wg sync.WaitGroup
 	for i := 0; i < w.workers; i++ {
 		wg.Add(1)
@@ -45,7 +51,7 @@ func (w *StatsWorker) Run(ctx context.Context) {
 
 	<-ctx.Done()
 	wg.Wait()
-	log.Println("stats worker pool stopped")
+	w.logger.Info("stats worker pool stopped")
 }
 
 func (w *StatsWorker) loop(ctx context.Context, workerID int) {
@@ -60,17 +66,12 @@ func (w *StatsWorker) loop(ctx context.Context, workerID int) {
 }
 
 func (w *StatsWorker) process(ctx context.Context, workerID int, ev VoteEvent) {
-	for attempt := 0; attempt < 3; attempt++ {
-		if err := w.agg.IncrementAggregated(ctx, ev.PollID, ev.OptionID); err == nil {
-			log.Printf("worker %d aggregated poll=%d option=%d", workerID, ev.PollID, ev.OptionID)
-			return
-		}
-
-		select {
-		case <-ctx.Done():
-			return
-		case <-time.After(w.retryDelay * time.Duration(attempt+1)):
-		}
+	err := retry.DoWithRetry(ctx, 4, 150*time.Millisecond, func() error {
+		return w.agg.IncrementAggregated(ctx, ev.PollID, ev.OptionID)
+	})
+	if err != nil {
+		w.logger.Error("failed to aggregate vote", "worker", workerID, "poll_id", ev.PollID, "option_id", ev.OptionID, "error", err)
+		return
 	}
-	log.Printf("worker %d failed to aggregate poll=%d option=%d after retries", workerID, ev.PollID, ev.OptionID)
+	w.logger.Info("aggregated vote", "worker", workerID, "poll_id", ev.PollID, "option_id", ev.OptionID, "user_id", ev.UserID)
 }

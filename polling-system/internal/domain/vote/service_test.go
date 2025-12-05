@@ -13,6 +13,7 @@ type memoryVoteRepo struct {
 	votes         map[int64]map[int64]int64
 	userVotes     map[int64]map[int64]bool
 	aggregated    map[int64]map[int64]int64
+	pollStatus    map[int64]string
 	countCalls    int
 	aggregatedHit int
 }
@@ -22,6 +23,7 @@ func newMemoryVoteRepo() *memoryVoteRepo {
 		votes:      make(map[int64]map[int64]int64),
 		userVotes:  make(map[int64]map[int64]bool),
 		aggregated: make(map[int64]map[int64]int64),
+		pollStatus: make(map[int64]string),
 	}
 }
 
@@ -78,6 +80,16 @@ func (r *memoryVoteRepo) IncrementAggregated(ctx context.Context, pollID, option
 	return nil
 }
 
+func (r *memoryVoteRepo) GetPollStatus(ctx context.Context, pollID int64) (string, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if status, ok := r.pollStatus[pollID]; ok {
+		return status, nil
+	}
+	// default to active for tests if not preset
+	return "active", nil
+}
+
 func TestVoteIdempotencyAndCache(t *testing.T) {
 	repo := newMemoryVoteRepo()
 	svc := NewService(repo)
@@ -110,5 +122,16 @@ func TestVoteIdempotencyAndCache(t *testing.T) {
 	}
 	if repo.countCalls != 1 {
 		t.Fatalf("expected cached results to be used, count calls %d", repo.countCalls)
+	}
+}
+
+func TestVoteRejectsWhenPollNotActive(t *testing.T) {
+	repo := newMemoryVoteRepo()
+	repo.pollStatus[1] = "closed"
+	svc := NewService(repo)
+	ctx := context.Background()
+
+	if err := svc.Vote(ctx, 1, 10, 1); !errors.Is(err, ErrPollNotActive) {
+		t.Fatalf("expected poll not active error, got %v", err)
 	}
 }
