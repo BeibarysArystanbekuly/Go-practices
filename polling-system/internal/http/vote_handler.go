@@ -44,7 +44,7 @@ func (h *Handler) handleVote(w http.ResponseWriter, r *http.Request) {
 
 	userID := userIDFromCtx(r)
 
-	if err := h.voteSvc.Vote(pollID, req.OptionID, userID); err != nil {
+	if err := h.voteSvc.Vote(r.Context(), pollID, req.OptionID, userID); err != nil {
 		if err == vote.ErrAlreadyVoted {
 			http.Error(w, "already voted", http.StatusBadRequest)
 			return
@@ -78,7 +78,7 @@ func (h *Handler) handlePollResults(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	res, total, err := h.voteSvc.Results(pollID)
+	res, total, err := h.voteSvc.Results(r.Context(), pollID)
 	if err != nil {
 		http.Error(w, "server error", http.StatusInternalServerError)
 		return

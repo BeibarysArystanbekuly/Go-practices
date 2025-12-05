@@ -21,14 +21,13 @@ Simple REST API for polls and voting, built in Go with Postgres and Docker.
    go mod tidy
    ```
 
-3. Apply migrations (run the SQL in `internal/db/migrations/*.sql`
-   using any Postgres client connecting to:
+3. Apply migrations (recommended: [golang-migrate](https://github.com/golang-migrate/migrate)):
 
-   - host: `localhost`
-   - port: `5432`
-   - user: `polling_user`
-   - password: `polling_pass`
-   - database: `polling_db`
+   ```bash
+   migrate -path internal/db/migrations -database "postgres://polling_user:polling_pass@localhost:5432/polling_db?sslmode=disable" up
+   ```
+
+   The migrations create users/polls/options/votes plus aggregation tables and indexes; a default admin (`admin@example.com` / password hash) is seeded.
 
 4. Run the server:
 
@@ -50,6 +49,7 @@ Simple REST API for polls and voting, built in Go with Postgres and Docker.
 - `GET  /api/v1/polls/{id}`
 - `POST /api/v1/polls/{id}/vote`
 - `GET  /api/v1/polls/{id}/results`
+- `GET  /metrics` (Prometheus-style plain-text metrics)
 
 Admin-only:
 
@@ -57,3 +57,10 @@ Admin-only:
 - `PATCH /api/v1/polls/{id}/status`
 - `GET   /api/v1/users`
 - `PATCH /api/v1/users/{id}/role`
+
+### Notes on behavior
+
+- JWT auth (roles: `admin`, `user`), password hashing (bcrypt).
+- Vote endpoint is rate-limited per user to reduce spam; duplicate votes are rejected idempotently.
+- Background worker pool consumes vote events and maintains aggregated results with retry/backoff.
+- Results endpoint caches responses briefly to offload the database.

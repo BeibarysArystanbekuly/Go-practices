@@ -34,7 +34,7 @@ func (h *Handler) handleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	u, err := h.userSvc.Register(req.Email, req.Password)
+	u, err := h.userSvc.Register(r.Context(), req.Email, req.Password)
 	if err != nil {
 		if err == user.ErrEmailTaken {
 			http.Error(w, "email taken", http.StatusBadRequest)
@@ -73,7 +73,7 @@ func (h *Handler) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	u, err := h.userSvc.Login(req.Email, req.Password)
+	u, err := h.userSvc.Login(r.Context(), req.Email, req.Password)
 	if err != nil {
 		http.Error(w, "invalid credentials", http.StatusUnauthorized)
 		return

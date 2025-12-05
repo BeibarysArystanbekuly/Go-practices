@@ -1,61 +1,118 @@
 package vote
 
-import "errors"
+import (
+	"context"
+	"errors"
+	"sync"
+	"time"
+)
 
 var (
-    ErrAlreadyVoted = errors.New("user already voted in this poll")
+	ErrAlreadyVoted = errors.New("user already voted in this poll")
 )
 
 type Service struct {
-    repo Repository
+	repo     Repository
+	cacheTTL time.Duration
+	cache    map[int64]cachedResult
+	mu       sync.RWMutex
+}
+
+type cachedResult struct {
+	results   []Result
+	total     int64
+	expiresAt time.Time
 }
 
 func NewService(repo Repository) *Service {
-    return &Service{repo: repo}
+	return &Service{
+		repo:     repo,
+		cacheTTL: 30 * time.Second,
+		cache:    make(map[int64]cachedResult),
+	}
 }
 
-func (s *Service) Vote(pollID, optionID, userID int64) error {
-    ok, err := s.repo.HasUserVoted(pollID, userID)
-    if err != nil {
-        return err
-    }
-    if ok {
-        return ErrAlreadyVoted
-    }
+func (s *Service) Vote(ctx context.Context, pollID, optionID, userID int64) error {
+	v := &Vote{
+		PollID:   pollID,
+		OptionID: optionID,
+		UserID:   userID,
+	}
 
-    v := &Vote{
-        PollID:   pollID,
-        OptionID: optionID,
-        UserID:   userID,
-    }
+	err := s.repo.Create(ctx, v)
+	if err != nil {
+		if errors.Is(err, ErrAlreadyVoted) {
+			return ErrAlreadyVoted
+		}
+		return err
+	}
 
-    return s.repo.Create(v)
+	s.invalidateCache(pollID)
+	return nil
 }
 
 type Result struct {
-    OptionID   int64   `json:"option_id"`
-    Votes      int64   `json:"votes"`
-    Percentage float64 `json:"percentage"`
+	OptionID   int64   `json:"option_id"`
+	Votes      int64   `json:"votes"`
+	Percentage float64 `json:"percentage"`
 }
 
-func (s *Service) Results(pollID int64) ([]Result, int64, error) {
-    counts, total, err := s.repo.CountByPoll(pollID)
-    if err != nil {
-        return nil, 0, err
-    }
+func (s *Service) Results(ctx context.Context, pollID int64) ([]Result, int64, error) {
+	if cached, ok := s.getCached(pollID); ok {
+		return cached.results, cached.total, nil
+	}
 
-    results := make([]Result, 0, len(counts))
-    for optionID, c := range counts {
-        var p float64
-        if total > 0 {
-            p = float64(c) * 100.0 / float64(total)
-        }
-        results = append(results, Result{
-            OptionID:   optionID,
-            Votes:      c,
-            Percentage: p,
-        })
-    }
+	counts, total, err := s.repo.AggregatedByPoll(ctx, pollID)
+	if err != nil {
+		return nil, 0, err
+	}
 
-    return results, total, nil
+	if len(counts) == 0 && total == 0 {
+		counts, total, err = s.repo.CountByPoll(ctx, pollID)
+		if err != nil {
+			return nil, 0, err
+		}
+	}
+
+	results := make([]Result, 0, len(counts))
+	for optionID, c := range counts {
+		var p float64
+		if total > 0 {
+			p = float64(c) * 100.0 / float64(total)
+		}
+		results = append(results, Result{
+			OptionID:   optionID,
+			Votes:      c,
+			Percentage: p,
+		})
+	}
+
+	s.setCached(pollID, results, total)
+	return results, total, nil
+}
+
+func (s *Service) getCached(pollID int64) (cachedResult, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	res, ok := s.cache[pollID]
+	if !ok || time.Now().After(res.expiresAt) {
+		return cachedResult{}, false
+	}
+	return res, true
+}
+
+func (s *Service) setCached(pollID int64, results []Result, total int64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.cache[pollID] = cachedResult{
+		results:   results,
+		total:     total,
+		expiresAt: time.Now().Add(s.cacheTTL),
+	}
+}
+
+func (s *Service) invalidateCache(pollID int64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.cache, pollID)
 }

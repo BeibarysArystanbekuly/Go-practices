@@ -17,7 +17,7 @@ type updateRoleRequest struct {
 // @Failure     500  {string}  string  "server error"
 // @Router      /api/v1/users [get]
 func (h *Handler) handleListUsers(w http.ResponseWriter, r *http.Request) {
-	users, err := h.userSvc.List()
+	users, err := h.userSvc.List(r.Context())
 	if err != nil {
 		http.Error(w, "server error", http.StatusInternalServerError)
 		return
@@ -48,7 +48,7 @@ func (h *Handler) handleUpdateUserRole(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.userSvc.UpdateRole(id, req.Role); err != nil {
+	if err := h.userSvc.UpdateRole(r.Context(), id, req.Role); err != nil {
 		http.Error(w, "server error", http.StatusInternalServerError)
 		return
 	}

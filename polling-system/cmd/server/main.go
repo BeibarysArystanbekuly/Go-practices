@@ -47,7 +47,7 @@ func main() {
 	jwtMgr := jwtpkg.NewManager(cfg.JWTSecret)
 
 	voteCh := make(chan worker.VoteEvent, 100)
-	statsWorker := worker.NewStatsWorker(voteCh)
+	statsWorker := worker.NewStatsWorker(voteCh, voteRepo)
 
 	router := api.NewRouter(userSvc, pollSvc, voteSvc, jwtMgr, voteCh)
 

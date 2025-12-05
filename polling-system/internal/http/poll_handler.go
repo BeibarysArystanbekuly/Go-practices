@@ -59,7 +59,7 @@ func (h *Handler) handleCreatePoll(w http.ResponseWriter, r *http.Request) {
 		opts = append(opts, poll.Option{Text: text})
 	}
 
-	id, err := h.pollSvc.Create(p, opts)
+	id, err := h.pollSvc.Create(r.Context(), p, opts)
 	if err != nil {
 		http.Error(w, "server error", http.StatusInternalServerError)
 		return
@@ -83,7 +83,7 @@ func (h *Handler) handleListPolls(w http.ResponseWriter, r *http.Request) {
 	if statusParam != "" {
 		status = &statusParam
 	}
-	polls, err := h.pollSvc.List(status)
+	polls, err := h.pollSvc.List(r.Context(), status)
 	if err != nil {
 		http.Error(w, "server error", http.StatusInternalServerError)
 		return
@@ -109,7 +109,7 @@ func (h *Handler) handleGetPoll(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	p, opts, err := h.pollSvc.Get(id)
+	p, opts, err := h.pollSvc.Get(r.Context(), id)
 	if err != nil {
 		http.Error(w, "not found", http.StatusNotFound)
 		return
@@ -147,7 +147,7 @@ func (h *Handler) handleUpdatePollStatus(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	if err := h.pollSvc.UpdateStatus(id, req.Status); err != nil {
+	if err := h.pollSvc.UpdateStatus(r.Context(), id, req.Status); err != nil {
 		http.Error(w, "bad status", http.StatusBadRequest)
 		return
 	}

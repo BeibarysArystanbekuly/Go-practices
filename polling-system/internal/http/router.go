@@ -9,6 +9,7 @@ import (
 	httpSwagger "github.com/swaggo/http-swagger"
 
 	"github.com/go-chi/chi/v5"
+	chimw "github.com/go-chi/chi/v5/middleware"
 
 	"polling-system/internal/domain/poll"
 	"polling-system/internal/domain/user"
@@ -41,11 +42,19 @@ func NewRouter(
 	}
 
 	r := chi.NewRouter()
+	r.Use(chimw.RequestID)
+	r.Use(chimw.RealIP)
+	r.Use(chimw.Logger)
+	r.Use(chimw.Recoverer)
+	r.Use(chimw.Timeout(60 * time.Second))
+	r.Use(CORSMiddleware)
+	r.Use(MetricsMiddleware)
 
 	r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	})
 	r.Get("/swagger/*", httpSwagger.WrapHandler)
+	r.Get("/metrics", MetricsHandler)
 
 	r.Route("/api/v1", func(r chi.Router) {
 		r.Post("/auth/register", h.handleRegister)
@@ -56,7 +65,7 @@ func NewRouter(
 
 			r.Get("/polls", h.handleListPolls)
 			r.Get("/polls/{id}", h.handleGetPoll)
-			r.Post("/polls/{id}/vote", h.handleVote)
+			r.With(RateLimitPerUser(10, time.Minute)).Post("/polls/{id}/vote", h.handleVote)
 			r.Get("/polls/{id}/results", h.handlePollResults)
 
 			r.Group(func(r chi.Router) {
