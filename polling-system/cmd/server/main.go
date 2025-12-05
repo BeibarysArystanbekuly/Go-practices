@@ -24,7 +24,7 @@ import (
 // @title           Polling System API
 // @version         1.0
 // @description     Simple polling platform with JWT auth
-// @BasePath        /api/v1
+// @BasePath        /
 // @securityDefinitions.apikey BearerAuth
 // @in              header
 // @name            Authorization
