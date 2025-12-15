@@ -21,27 +21,68 @@ JSON REST API for creating polls and casting votes. The stack is Go + chi + Post
 
 ## Quickstart (Docker Compose)
 
+This repo ships with `docker-compose.yml` that runs:
+- `db` – Postgres (user/pass: `polling_user` / `polling_pass`, db: `polling_db`)
+- `api` – the Go HTTP server on `http://localhost:8080`
+- `migrate` – a one-off utility container (golang-migrate) to run DB migrations
+
+### First start (fresh DB)
+
+1) Start Postgres:
+
 ```bash
-docker compose up -d
+docker compose up -d db
 ```
 
-Services:
-- `api` – builds the Go server and exposes port `8080`
-- `db` – Postgres with default creds (`polling_user` / `polling_pass`)
+2) Apply migrations:
 
-Environment (override as needed):
+```bash
+docker compose run --rm migrate up
+```
+
+3) Start API:
+
+```bash
+docker compose up -d --build api
+```
+
+4) Verify:
+- Health: `curl http://localhost:8080/health`
+- Readiness (DB): `curl http://localhost:8080/ready`
+- Swagger UI: `http://localhost:8080/swagger/index.html`
+- Metrics: `http://localhost:8080/metrics`
+
+### Next runs (DB already migrated)
+
+```bash
+docker compose up -d --build
+```
+
+### Stop / cleanup
+
+- Stop containers (keeps DB data): `docker compose stop`
+- Stop + remove containers (keeps DB data): `docker compose down`
+- Full reset (drops DB volume!): `docker compose down -v`
+
+### Environment
+
+The API reads `.env` (or container env vars):
 - `APP_PORT` (default `8080`)
-- `DB_DSN` (defaults to the compose DB: `postgres://polling_user:polling_pass@db:5432/polling_db?sslmode=disable`)
-- `JWT_SECRET` (set your own)
+- `DB_DSN` (compose default: `postgres://polling_user:polling_pass@db:5432/polling_db?sslmode=disable`)
+- `JWT_SECRET` (set your own secret in prod)
 - `JWT_ISSUER` (default `polling-system`)
-- Seeded admin: `admin@example.com` (password hash in `2_seed_admin.up.sql` — change if needed)
 
 ## Migrations (golang-migrate CLI)
 
+Via compose (recommended):
+- Up: `docker compose run --rm migrate up`
+- Down 1 step: `docker compose run --rm migrate down 1`
+- Version: `docker compose run --rm migrate version`
+
+Via local `migrate` binary:
+
 ```bash
-migrate -path internal/db/migrations \
-  -database "postgres://polling_user:polling_pass@localhost:5432/polling_db?sslmode=disable" \
-  up
+migrate -path internal/db/migrations -database "postgres://polling_user:polling_pass@localhost:5432/polling_db?sslmode=disable" up
 ```
 
 Tables: `users`, `polls`, `options`, `votes`, `aggregated_results`, indexes, and a seeded admin (`admin@example.com`).
