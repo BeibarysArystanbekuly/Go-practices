@@ -2,6 +2,7 @@ package poll
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"sync"
 	"testing"
@@ -50,7 +51,7 @@ func (r *memoryPollRepo) GetByID(ctx context.Context, id int64) (*Poll, []Option
 	defer r.mu.Unlock()
 	p, ok := r.polls[id]
 	if !ok {
-		return nil, nil, errors.New("not found")
+		return nil, nil, sql.ErrNoRows
 	}
 	opts := r.opts[id]
 	copyPoll := *p
@@ -77,10 +78,44 @@ func (r *memoryPollRepo) UpdateStatus(ctx context.Context, id int64, status stri
 	defer r.mu.Unlock()
 	p, ok := r.polls[id]
 	if !ok {
-		return errors.New("not found")
+		return sql.ErrNoRows
 	}
 	p.Status = status
 	p.UpdatedAt = time.Now()
+	return nil
+}
+
+func (r *memoryPollRepo) Update(ctx context.Context, id int64, input UpdateInput) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	p, ok := r.polls[id]
+	if !ok {
+		return sql.ErrNoRows
+	}
+	if input.Title != nil {
+		p.Title = *input.Title
+	}
+	if input.Description != nil {
+		p.Description = input.Description
+	}
+	if input.StartsAt != nil {
+		p.StartsAt = input.StartsAt
+	}
+	if input.EndsAt != nil {
+		p.EndsAt = input.EndsAt
+	}
+	p.UpdatedAt = time.Now()
+	return nil
+}
+
+func (r *memoryPollRepo) Delete(ctx context.Context, id int64) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, ok := r.polls[id]; !ok {
+		return sql.ErrNoRows
+	}
+	delete(r.polls, id)
+	delete(r.opts, id)
 	return nil
 }
 

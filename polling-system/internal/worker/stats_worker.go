@@ -59,7 +59,10 @@ func (w *StatsWorker) loop(ctx context.Context, workerID int) {
 		select {
 		case <-ctx.Done():
 			return
-		case ev := <-w.Ch:
+		case ev, ok := <-w.Ch:
+			if !ok {
+				return
+			}
 			w.process(ctx, workerID, ev)
 		}
 	}

@@ -24,7 +24,7 @@ CREATE TABLE options (
     text TEXT NOT NULL,
     created_at TIMESTAMP NOT NULL DEFAULT now()
 );
-
+        
 CREATE TABLE votes (
     id SERIAL PRIMARY KEY,
     poll_id INT NOT NULL REFERENCES polls(id) ON DELETE CASCADE,

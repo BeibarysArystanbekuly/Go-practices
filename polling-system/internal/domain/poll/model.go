@@ -24,9 +24,18 @@ type Option struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
+type UpdateInput struct {
+	Title       *string
+	Description *string
+	StartsAt    *time.Time
+	EndsAt      *time.Time
+}
+
 type Repository interface {
 	Create(ctx context.Context, p *Poll, options []Option) (int64, error)
 	GetByID(ctx context.Context, id int64) (*Poll, []Option, error)
 	List(ctx context.Context, status *string) ([]Poll, error)
 	UpdateStatus(ctx context.Context, id int64, status string) error
+	Update(ctx context.Context, id int64, input UpdateInput) error
+	Delete(ctx context.Context, id int64) error
 }

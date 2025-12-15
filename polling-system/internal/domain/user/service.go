@@ -10,6 +10,7 @@ import (
 var (
 	ErrInvalidCredentials = errors.New("invalid credentials")
 	ErrEmailTaken         = errors.New("email already taken")
+	ErrInactiveUser       = errors.New("inactive user")
 )
 
 type Service struct {
@@ -38,6 +39,7 @@ func (s *Service) Register(ctx context.Context, email, password string) (*User, 
 		Email:        email,
 		PasswordHash: string(hash),
 		Role:         "user",
+		IsActive:     true,
 	}
 
 	if err := s.repo.Create(ctx, u); err != nil {
@@ -51,6 +53,10 @@ func (s *Service) Login(ctx context.Context, email, password string) (*User, err
 	u, err := s.repo.GetByEmail(ctx, email)
 	if err != nil {
 		return nil, ErrInvalidCredentials
+	}
+
+	if !u.IsActive {
+		return nil, ErrInactiveUser
 	}
 
 	if err := bcrypt.CompareHashAndPassword([]byte(u.PasswordHash), []byte(password)); err != nil {
@@ -73,4 +79,8 @@ func (s *Service) UpdateRole(ctx context.Context, id int64, role string) error {
 
 func (s *Service) GetByID(ctx context.Context, id int64) (*User, error) {
 	return s.repo.GetByID(ctx, id)
+}
+
+func (s *Service) Deactivate(ctx context.Context, id int64) error {
+	return s.repo.Deactivate(ctx, id)
 }

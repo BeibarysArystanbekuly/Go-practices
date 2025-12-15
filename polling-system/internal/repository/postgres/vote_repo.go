@@ -27,10 +27,7 @@ func (r *VoteRepo) Create(ctx context.Context, v *vote.Vote) error {
 	err := r.db.QueryRowContext(ctx, query, v.PollID, v.OptionID, v.UserID).
 		Scan(&v.ID, &v.CreatedAt)
 	if err != nil {
-		if isUniqueViolation(err) {
-			return vote.ErrAlreadyVoted
-		}
-		return err
+		return mapVoteError(err)
 	}
 	return nil
 }
@@ -104,10 +101,23 @@ func (r *VoteRepo) GetPollStatus(ctx context.Context, pollID int64) (string, err
 	return status, err
 }
 
-func isUniqueViolation(err error) bool {
+func mapVoteError(err error) error {
 	var pgErr *pgconn.PgError
 	if errors.As(err, &pgErr) {
-		return pgErr.Code == "23505"
+		switch pgErr.Code {
+		case "23505":
+			if pgErr.ConstraintName == "votes_poll_id_user_id_key" || pgErr.ConstraintName == "votes_poll_id_user_id_idx" {
+				return vote.ErrAlreadyVoted
+			}
+			return vote.ErrAlreadyVoted
+		case "23503":
+			switch pgErr.ConstraintName {
+			case "votes_option_poll_fkey", "votes_option_id_fkey":
+				return vote.ErrOptionNotInPoll
+			case "votes_poll_id_fkey":
+				return vote.ErrPollNotFound
+			}
+		}
 	}
-	return false
+	return err
 }

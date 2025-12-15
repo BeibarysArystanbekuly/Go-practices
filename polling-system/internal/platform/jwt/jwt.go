@@ -1,6 +1,7 @@
 package jwt
 
 import (
+	"fmt"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -14,10 +15,14 @@ type Claims struct {
 
 type Manager struct {
 	secret []byte
+	issuer string
 }
 
-func NewManager(secret string) *Manager {
-	return &Manager{secret: []byte(secret)}
+func NewManager(secret, issuer string) *Manager {
+	if issuer == "" {
+		issuer = "polling-system"
+	}
+	return &Manager{secret: []byte(secret), issuer: issuer}
 }
 
 func (m *Manager) Generate(userID int64, role string, ttl time.Duration) (string, error) {
@@ -27,6 +32,7 @@ func (m *Manager) Generate(userID int64, role string, ttl time.Duration) (string
 		RegisteredClaims: jwt.RegisteredClaims{
 			ExpiresAt: jwt.NewNumericDate(time.Now().Add(ttl)),
 			IssuedAt:  jwt.NewNumericDate(time.Now()),
+			Issuer:    m.issuer,
 		},
 	}
 
@@ -36,6 +42,9 @@ func (m *Manager) Generate(userID int64, role string, ttl time.Duration) (string
 
 func (m *Manager) Parse(tokenStr string) (*Claims, error) {
 	token, err := jwt.ParseWithClaims(tokenStr, &Claims{}, func(token *jwt.Token) (interface{}, error) {
+		if token.Method.Alg() != jwt.SigningMethodHS256.Alg() {
+			return nil, fmt.Errorf("unexpected signing method: %s", token.Method.Alg())
+		}
 		return m.secret, nil
 	})
 	if err != nil {
@@ -43,6 +52,9 @@ func (m *Manager) Parse(tokenStr string) (*Claims, error) {
 	}
 
 	if claims, ok := token.Claims.(*Claims); ok && token.Valid {
+		if m.issuer != "" && claims.Issuer != m.issuer {
+			return nil, jwt.ErrTokenInvalidIssuer
+		}
 		return claims, nil
 	}
 

@@ -5,6 +5,7 @@ import (
 	"net/http"
 
 	"polling-system/internal/domain/vote"
+	"polling-system/internal/platform/apperr"
 	"polling-system/internal/worker"
 )
 
@@ -25,35 +26,33 @@ type pollResultsResponse struct {
 // @Param       id       path      int64        true  "Poll ID"
 // @Param       request  body      voteRequest  true  "Vote payload"
 // @Success     204
-// @Failure     400      {string}  string  "invalid body or already voted"
-// @Failure     401      {string}  string  "unauthorized"
-// @Failure     500      {string}  string  "server error"
+// @Failure     400      {object}  map[string]string  "invalid body or already voted"
+// @Failure     401      {object}  map[string]string  "unauthorized"
+// @Failure     404      {object}  map[string]string  "not found"
+// @Failure     409      {object}  map[string]string  "already voted"
+// @Failure     500      {object}  map[string]string  "server error"
 // @Router      /api/v1/polls/{id}/vote [post]
 func (h *Handler) handleVote(w http.ResponseWriter, r *http.Request) {
 	pollID, err := parseIDParam(r, "id")
 	if err != nil {
-		http.Error(w, "invalid poll id", http.StatusBadRequest)
+		errorResponse(w, apperr.BadRequest("invalid_input", "invalid poll id", err))
 		return
 	}
 
 	var req voteRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "invalid body", http.StatusBadRequest)
+		errorResponse(w, apperr.BadRequest("invalid_input", "invalid body", err))
+		return
+	}
+	if req.OptionID == 0 {
+		errorResponse(w, apperr.BadRequest("invalid_input", "option_id is required", nil))
 		return
 	}
 
 	userID := userIDFromCtx(r)
 
 	if err := h.voteSvc.Vote(r.Context(), pollID, req.OptionID, userID); err != nil {
-		if err == vote.ErrAlreadyVoted {
-			http.Error(w, "already voted", http.StatusConflict)
-			return
-		}
-		if err == vote.ErrPollNotActive {
-			http.Error(w, "poll not active", http.StatusBadRequest)
-			return
-		}
-		http.Error(w, "server error", http.StatusInternalServerError)
+		errorResponse(w, err)
 		return
 	}
 
@@ -71,20 +70,21 @@ func (h *Handler) handleVote(w http.ResponseWriter, r *http.Request) {
 // @Produce     json
 // @Param       id   path     int64  true  "Poll ID"
 // @Success     200  {object} pollResultsResponse
-// @Failure     400  {string}  string  "invalid poll id"
-// @Failure     401  {string}  string  "unauthorized"
-// @Failure     500  {string}  string  "server error"
+// @Failure     400  {object}  map[string]string  "invalid poll id"
+// @Failure     401  {object}  map[string]string  "unauthorized"
+// @Failure     404  {object}  map[string]string  "not found"
+// @Failure     500  {object}  map[string]string  "server error"
 // @Router      /api/v1/polls/{id}/results [get]
 func (h *Handler) handlePollResults(w http.ResponseWriter, r *http.Request) {
 	pollID, err := parseIDParam(r, "id")
 	if err != nil {
-		http.Error(w, "invalid poll id", http.StatusBadRequest)
+		errorResponse(w, apperr.BadRequest("invalid_input", "invalid poll id", err))
 		return
 	}
 
 	res, total, err := h.voteSvc.Results(r.Context(), pollID)
 	if err != nil {
-		http.Error(w, "server error", http.StatusInternalServerError)
+		errorResponse(w, err)
 		return
 	}
 

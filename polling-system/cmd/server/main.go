@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"syscall"
 	"time"
 
 	_ "polling-system/docs"
@@ -51,22 +52,29 @@ func main() {
 	pollSvc := poll.NewService(pollRepo)
 	voteSvc := vote.NewService(voteRepo)
 
-	jwtMgr := jwtpkg.NewManager(cfg.JWTSecret)
+	jwtMgr := jwtpkg.NewManager(cfg.JWTSecret, cfg.JWTIssuer)
 
 	voteCh := make(chan worker.VoteEvent, 100)
 	statsWorker := worker.NewStatsWorker(voteCh, voteRepo, logger)
 
-	router := api.NewRouter(userSvc, pollSvc, voteSvc, jwtMgr, voteCh)
+	router := api.NewRouter(userSvc, pollSvc, voteSvc, jwtMgr, voteCh, db)
 
 	srv := &http.Server{
 		Addr:    ":" + cfg.Port,
 		Handler: router,
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
 
-	go statsWorker.Run(ctx)
+	workerCtx, workerCancel := context.WithCancel(context.Background())
+	defer workerCancel()
+	workerDone := make(chan struct{})
+
+	go func() {
+		statsWorker.Run(workerCtx)
+		close(workerDone)
+	}()
 
 	go func() {
 		logger.Info("server listening", "port", cfg.Port)
@@ -76,20 +84,24 @@ func main() {
 		}
 	}()
 
-	stop := make(chan os.Signal, 1)
-	signal.Notify(stop, os.Interrupt)
-
-	<-stop
-	logger.Info("shutting down...")
+	<-ctx.Done()
+	logger.Info("shutting down...", "signal", ctx.Err())
 
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer shutdownCancel()
 
-	cancel()
-
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		logger.Error("server shutdown error", "error", err)
 		os.Exit(1)
+	}
+
+	close(voteCh)
+	workerCancel()
+
+	select {
+	case <-workerDone:
+	case <-shutdownCtx.Done():
+		logger.Warn("worker shutdown timed out")
 	}
 
 	logger.Info("server stopped")

@@ -3,6 +3,8 @@ package postgres
 import (
 	"context"
 	"database/sql"
+	"fmt"
+	"strings"
 
 	"polling-system/internal/domain/poll"
 )
@@ -128,6 +130,67 @@ func (r *PollRepo) List(ctx context.Context, status *string) ([]poll.Poll, error
 }
 
 func (r *PollRepo) UpdateStatus(ctx context.Context, id int64, status string) error {
-	_, err := r.db.ExecContext(ctx, `UPDATE polls SET status = $1, updated_at = now() WHERE id = $2`, status, id)
-	return err
+	res, err := r.db.ExecContext(ctx, `UPDATE polls SET status = $1, updated_at = now() WHERE id = $2`, status, id)
+	if err != nil {
+		return err
+	}
+	if rows, _ := res.RowsAffected(); rows == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
+func (r *PollRepo) Update(ctx context.Context, id int64, input poll.UpdateInput) error {
+	setParts := make([]string, 0, 4)
+	args := make([]any, 0, 5)
+	idx := 1
+
+	if input.Title != nil {
+		setParts = append(setParts, fmt.Sprintf("title = $%d", idx))
+		args = append(args, *input.Title)
+		idx++
+	}
+	if input.Description != nil {
+		setParts = append(setParts, fmt.Sprintf("description = $%d", idx))
+		args = append(args, *input.Description)
+		idx++
+	}
+	if input.StartsAt != nil {
+		setParts = append(setParts, fmt.Sprintf("starts_at = $%d", idx))
+		args = append(args, *input.StartsAt)
+		idx++
+	}
+	if input.EndsAt != nil {
+		setParts = append(setParts, fmt.Sprintf("ends_at = $%d", idx))
+		args = append(args, *input.EndsAt)
+		idx++
+	}
+
+	if len(setParts) == 0 {
+		return fmt.Errorf("no fields to update")
+	}
+
+	setParts = append(setParts, "updated_at = now()")
+	query := fmt.Sprintf("UPDATE polls SET %s WHERE id = $%d", strings.Join(setParts, ", "), idx)
+	args = append(args, id)
+
+	res, err := r.db.ExecContext(ctx, query, args...)
+	if err != nil {
+		return err
+	}
+	if rows, _ := res.RowsAffected(); rows == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
+func (r *PollRepo) Delete(ctx context.Context, id int64) error {
+	res, err := r.db.ExecContext(ctx, `DELETE FROM polls WHERE id = $1`, id)
+	if err != nil {
+		return err
+	}
+	if rows, _ := res.RowsAffected(); rows == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
 }

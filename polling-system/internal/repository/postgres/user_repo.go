@@ -19,20 +19,20 @@ func (r *UserRepo) Create(ctx context.Context, u *user.User) error {
 	query := `
         INSERT INTO users (email, password_hash, role)
         VALUES ($1, $2, $3)
-        RETURNING id, created_at
+        RETURNING id, created_at, is_active
     `
 	return r.db.QueryRowContext(ctx, query, u.Email, u.PasswordHash, u.Role).
-		Scan(&u.ID, &u.CreatedAt)
+		Scan(&u.ID, &u.CreatedAt, &u.IsActive)
 }
 
 func (r *UserRepo) GetByEmail(ctx context.Context, email string) (*user.User, error) {
 	query := `
-        SELECT id, email, password_hash, role, created_at
+        SELECT id, email, password_hash, role, created_at, is_active
         FROM users WHERE email = $1
     `
 	u := &user.User{}
 	err := r.db.QueryRowContext(ctx, query, email).
-		Scan(&u.ID, &u.Email, &u.PasswordHash, &u.Role, &u.CreatedAt)
+		Scan(&u.ID, &u.Email, &u.PasswordHash, &u.Role, &u.CreatedAt, &u.IsActive)
 	if err != nil {
 		return nil, err
 	}
@@ -41,12 +41,12 @@ func (r *UserRepo) GetByEmail(ctx context.Context, email string) (*user.User, er
 
 func (r *UserRepo) GetByID(ctx context.Context, id int64) (*user.User, error) {
 	query := `
-        SELECT id, email, password_hash, role, created_at
+        SELECT id, email, password_hash, role, created_at, is_active
         FROM users WHERE id = $1
     `
 	u := &user.User{}
 	err := r.db.QueryRowContext(ctx, query, id).
-		Scan(&u.ID, &u.Email, &u.PasswordHash, &u.Role, &u.CreatedAt)
+		Scan(&u.ID, &u.Email, &u.PasswordHash, &u.Role, &u.CreatedAt, &u.IsActive)
 	if err != nil {
 		return nil, err
 	}
@@ -55,7 +55,7 @@ func (r *UserRepo) GetByID(ctx context.Context, id int64) (*user.User, error) {
 
 func (r *UserRepo) List(ctx context.Context) ([]user.User, error) {
 	rows, err := r.db.QueryContext(ctx, `
-        SELECT id, email, password_hash, role, created_at
+        SELECT id, email, password_hash, role, created_at, is_active
         FROM users ORDER BY id
     `)
 	if err != nil {
@@ -66,7 +66,7 @@ func (r *UserRepo) List(ctx context.Context) ([]user.User, error) {
 	var usersList []user.User
 	for rows.Next() {
 		var u user.User
-		if err := rows.Scan(&u.ID, &u.Email, &u.PasswordHash, &u.Role, &u.CreatedAt); err != nil {
+		if err := rows.Scan(&u.ID, &u.Email, &u.PasswordHash, &u.Role, &u.CreatedAt, &u.IsActive); err != nil {
 			return nil, err
 		}
 		usersList = append(usersList, u)
@@ -75,6 +75,23 @@ func (r *UserRepo) List(ctx context.Context) ([]user.User, error) {
 }
 
 func (r *UserRepo) UpdateRole(ctx context.Context, id int64, role string) error {
-	_, err := r.db.ExecContext(ctx, `UPDATE users SET role = $1 WHERE id = $2`, role, id)
-	return err
+	res, err := r.db.ExecContext(ctx, `UPDATE users SET role = $1 WHERE id = $2`, role, id)
+	if err != nil {
+		return err
+	}
+	if rows, _ := res.RowsAffected(); rows == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
+func (r *UserRepo) Deactivate(ctx context.Context, id int64) error {
+	res, err := r.db.ExecContext(ctx, `UPDATE users SET is_active = FALSE WHERE id = $1`, id)
+	if err != nil {
+		return err
+	}
+	if rows, _ := res.RowsAffected(); rows == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
 }

@@ -1,6 +1,18 @@
 version: '3.8'
 
 services:
+  api:
+    build: .
+    depends_on:
+      - db
+    environment:
+      APP_PORT: 8080
+      DB_DSN: postgres://polling_user:polling_pass@db:5432/polling_db?sslmode=disable
+      JWT_SECRET: ${JWT_SECRET:-super-secret-change-me}
+      JWT_ISSUER: ${JWT_ISSUER:-polling-system}
+    ports:
+      - "8080:8080"
+
   db:
     image: postgres:16
     container_name: polling_db

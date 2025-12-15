@@ -11,6 +11,7 @@ type User struct {
 	PasswordHash string    `json:"-"`
 	Role         string    `json:"role"`
 	CreatedAt    time.Time `json:"created_at"`
+	IsActive     bool      `json:"is_active"`
 }
 
 type Repository interface {
@@ -19,4 +20,5 @@ type Repository interface {
 	GetByID(ctx context.Context, id int64) (*User, error)
 	List(ctx context.Context) ([]User, error)
 	UpdateRole(ctx context.Context, id int64, role string) error
+	Deactivate(ctx context.Context, id int64) error
 }

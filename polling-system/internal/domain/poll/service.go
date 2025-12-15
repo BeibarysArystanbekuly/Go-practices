@@ -2,11 +2,14 @@ package poll
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 )
 
 var (
 	ErrInvalidStatus = errors.New("invalid poll status")
+	ErrInvalidDates  = errors.New("ends_at must be after starts_at")
+	ErrPollNotFound  = errors.New("poll not found")
 )
 
 type Service struct {
@@ -29,7 +32,11 @@ func (s *Service) Create(ctx context.Context, p *Poll, options []Option) (int64,
 }
 
 func (s *Service) Get(ctx context.Context, id int64) (*Poll, []Option, error) {
-	return s.repo.GetByID(ctx, id)
+	p, opts, err := s.repo.GetByID(ctx, id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil, ErrPollNotFound
+	}
+	return p, opts, err
 }
 
 func (s *Service) List(ctx context.Context, status *string) ([]Poll, error) {
@@ -40,5 +47,35 @@ func (s *Service) UpdateStatus(ctx context.Context, id int64, status string) err
 	if status != "draft" && status != "active" && status != "closed" {
 		return ErrInvalidStatus
 	}
-	return s.repo.UpdateStatus(ctx, id, status)
+	err := s.repo.UpdateStatus(ctx, id, status)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrPollNotFound
+	}
+	return err
+}
+
+func (s *Service) Update(ctx context.Context, id int64, input UpdateInput) error {
+	if input.Title != nil && *input.Title == "" {
+		return errors.New("title required")
+	}
+	if input.StartsAt != nil && input.EndsAt != nil && input.EndsAt.Before(*input.StartsAt) {
+		return ErrInvalidDates
+	}
+	if input.Title == nil && input.Description == nil && input.StartsAt == nil && input.EndsAt == nil {
+		return errors.New("no fields to update")
+	}
+
+	err := s.repo.Update(ctx, id, input)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrPollNotFound
+	}
+	return err
+}
+
+func (s *Service) Delete(ctx context.Context, id int64) error {
+	err := s.repo.Delete(ctx, id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrPollNotFound
+	}
+	return err
 }

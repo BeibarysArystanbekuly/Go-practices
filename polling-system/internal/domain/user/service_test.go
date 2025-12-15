@@ -79,6 +79,17 @@ func (r *memoryUserRepo) UpdateRole(ctx context.Context, id int64, role string) 
 	return nil
 }
 
+func (r *memoryUserRepo) Deactivate(ctx context.Context, id int64) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	u, ok := r.users[id]
+	if !ok {
+		return sql.ErrNoRows
+	}
+	u.IsActive = false
+	return nil
+}
+
 func TestRegisterAndLogin(t *testing.T) {
 	repo := newMemoryUserRepo()
 	svc := NewService(repo)
@@ -103,5 +114,12 @@ func TestRegisterAndLogin(t *testing.T) {
 	}
 	if _, err := svc.Login(ctx, "john@example.com", "wrong"); !errors.Is(err, ErrInvalidCredentials) {
 		t.Fatalf("expected invalid credentials error")
+	}
+
+	if err := svc.Deactivate(ctx, u.ID); err != nil {
+		t.Fatalf("deactivate: %v", err)
+	}
+	if _, err := svc.Login(ctx, "john@example.com", "s3cret"); !errors.Is(err, ErrInactiveUser) {
+		t.Fatalf("expected inactive user error")
 	}
 }

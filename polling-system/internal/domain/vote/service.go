@@ -2,14 +2,17 @@ package vote
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"sync"
 	"time"
 )
 
 var (
-	ErrAlreadyVoted  = errors.New("user already voted in this poll")
-	ErrPollNotActive = errors.New("poll is not active")
+	ErrAlreadyVoted    = errors.New("user already voted in this poll")
+	ErrPollNotActive   = errors.New("poll is not active")
+	ErrOptionNotInPoll = errors.New("option not in poll")
+	ErrPollNotFound    = errors.New("poll not found")
 )
 
 type Service struct {
@@ -36,6 +39,9 @@ func NewService(repo Repository) *Service {
 func (s *Service) Vote(ctx context.Context, pollID, optionID, userID int64) error {
 	status, err := s.repo.GetPollStatus(ctx, pollID)
 	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrPollNotFound
+		}
 		return err
 	}
 	if status != "active" {
@@ -52,6 +58,12 @@ func (s *Service) Vote(ctx context.Context, pollID, optionID, userID int64) erro
 	if err != nil {
 		if errors.Is(err, ErrAlreadyVoted) {
 			return ErrAlreadyVoted
+		}
+		if errors.Is(err, ErrOptionNotInPoll) {
+			return ErrOptionNotInPoll
+		}
+		if errors.Is(err, ErrPollNotFound) {
+			return ErrPollNotFound
 		}
 		return err
 	}

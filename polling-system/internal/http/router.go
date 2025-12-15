@@ -1,6 +1,8 @@
 package api
 
 import (
+	"context"
+	"database/sql"
 	"encoding/json"
 	"net/http"
 	"strconv"
@@ -26,6 +28,7 @@ type Handler struct {
 	voteSvc *vote.Service
 	jwtMgr  *jwtpkg.Manager
 	voteCh  chan<- worker.VoteEvent
+	db      *sql.DB
 }
 
 func NewRouter(
@@ -34,6 +37,7 @@ func NewRouter(
 	voteSvc *vote.Service,
 	jwtMgr *jwtpkg.Manager,
 	voteCh chan<- worker.VoteEvent,
+	db *sql.DB,
 ) http.Handler {
 	h := &Handler{
 		userSvc: userSvc,
@@ -41,6 +45,7 @@ func NewRouter(
 		voteSvc: voteSvc,
 		jwtMgr:  jwtMgr,
 		voteCh:  voteCh,
+		db:      db,
 	}
 
 	r := chi.NewRouter()
@@ -54,6 +59,7 @@ func NewRouter(
 	r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	})
+	r.Get("/ready", h.handleReady)
 	r.Get("/swagger/*", httpSwagger.WrapHandler)
 	r.Get("/metrics", promhttp.Handler().ServeHTTP)
 
@@ -72,9 +78,12 @@ func NewRouter(
 			r.Group(func(r chi.Router) {
 				r.Use(RequireRole("admin"))
 				r.Post("/polls", h.handleCreatePoll)
+				r.Patch("/polls/{id}", h.handleUpdatePoll)
 				r.Patch("/polls/{id}/status", h.handleUpdatePollStatus)
+				r.Delete("/polls/{id}", h.handleDeletePoll)
 				r.Get("/users", h.handleListUsers)
 				r.Patch("/users/{id}/role", h.handleUpdateUserRole)
+				r.Patch("/users/{id}/deactivate", h.handleDeactivateUser)
 			})
 		})
 	})
@@ -102,4 +111,27 @@ func parseTimePtr(s *string) *time.Time {
 		return nil
 	}
 	return &t
+}
+
+func (h *Handler) handleReady(w http.ResponseWriter, r *http.Request) {
+	if h.db == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{
+			"error":   "db_unavailable",
+			"message": "database not configured",
+		})
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+	defer cancel()
+
+	if err := h.db.PingContext(ctx); err != nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{
+			"error":   "db_unavailable",
+			"message": "database not ready",
+		})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ready"})
 }

@@ -14,6 +14,7 @@ import (
 	"golang.org/x/time/rate"
 
 	"polling-system/internal/metrics"
+	"polling-system/internal/platform/apperr"
 	jwtpkg "polling-system/internal/platform/jwt"
 )
 
@@ -37,19 +38,19 @@ func AuthMiddleware(jm *jwtpkg.Manager) func(http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			h := r.Header.Get("Authorization")
 			if h == "" {
-				http.Error(w, "missing authorization header", http.StatusUnauthorized)
+				errorResponse(w, apperr.Unauthorized("missing_token", "missing authorization header", nil))
 				return
 			}
 
 			parts := strings.SplitN(h, " ", 2)
 			if len(parts) != 2 || strings.ToLower(parts[0]) != "bearer" {
-				http.Error(w, "invalid authorization header", http.StatusUnauthorized)
+				errorResponse(w, apperr.Unauthorized("invalid_token", "invalid authorization header", nil))
 				return
 			}
 
 			claims, err := jm.Parse(parts[1])
 			if err != nil {
-				http.Error(w, "invalid token", http.StatusUnauthorized)
+				errorResponse(w, apperr.Unauthorized("invalid_token", "invalid token", err))
 				return
 			}
 
@@ -65,7 +66,7 @@ func RequireRole(role string) func(http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			ctxRole, ok := r.Context().Value(ctxKeyRole).(string)
 			if !ok || ctxRole != role {
-				http.Error(w, "forbidden", http.StatusForbidden)
+				errorResponse(w, apperr.Forbidden("forbidden", "insufficient permissions", nil))
 				return
 			}
 			next.ServeHTTP(w, r)
@@ -86,7 +87,7 @@ func CORSMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Allow-Headers", "Accept, Authorization, Content-Type")
-		w.Header().Set("Access-Control-Allow-Methods", "GET,POST,PATCH,OPTIONS")
+		w.Header().Set("Access-Control-Allow-Methods", "GET,POST,PATCH,DELETE,OPTIONS")
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
 			return
@@ -101,7 +102,10 @@ func RateLimitVotes(r rate.Limit, burst int) func(http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			ip := clientIP(r)
 			if !limiter.allow(ip) {
-				http.Error(w, "too many requests", http.StatusTooManyRequests)
+				writeJSON(w, http.StatusTooManyRequests, map[string]string{
+					"error":   "rate_limited",
+					"message": "too many requests",
+				})
 				return
 			}
 			next.ServeHTTP(w, r)

@@ -11,6 +11,7 @@ type Config struct {
 	Port      string
 	DB_DSN    string
 	JWTSecret string
+	JWTIssuer string
 }
 
 func Load() Config {
@@ -20,6 +21,7 @@ func Load() Config {
 		Port:      getEnv("APP_PORT", "8080"),
 		DB_DSN:    getEnv("DB_DSN", "postgres://polling_user:polling_pass@localhost:5432/polling_db?sslmode=disable"),
 		JWTSecret: getEnv("JWT_SECRET", "dev-secret-change-me"),
+		JWTIssuer: getEnv("JWT_ISSUER", "polling-system"),
 	}
 
 	if cfg.JWTSecret == "" {

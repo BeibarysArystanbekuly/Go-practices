@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -45,6 +46,9 @@ func (r *testUserRepo) seed(u *user.User) {
 	if u.CreatedAt.IsZero() {
 		u.CreatedAt = time.Now()
 	}
+	if !u.IsActive {
+		u.IsActive = true
+	}
 	copyUser := *u
 	r.users[u.ID] = &copyUser
 	r.byMail[u.Email] = u.ID
@@ -56,6 +60,9 @@ func (r *testUserRepo) Create(ctx context.Context, u *user.User) error {
 	u.ID = r.nextID
 	r.nextID++
 	u.CreatedAt = time.Now()
+	if !u.IsActive {
+		u.IsActive = true
+	}
 	copyUser := *u
 	r.users[u.ID] = &copyUser
 	r.byMail[u.Email] = u.ID
@@ -105,37 +112,52 @@ func (r *testUserRepo) UpdateRole(ctx context.Context, id int64, role string) er
 	return nil
 }
 
+func (r *testUserRepo) Deactivate(ctx context.Context, id int64) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	u, ok := r.users[id]
+	if !ok {
+		return sql.ErrNoRows
+	}
+	u.IsActive = false
+	return nil
+}
+
 type testPollRepo struct {
-	mu     sync.Mutex
-	polls  map[int64]*poll.Poll
-	opts   map[int64][]poll.Option
-	nextID int64
+	mu           sync.Mutex
+	polls        map[int64]*poll.Poll
+	opts         map[int64][]poll.Option
+	nextPollID   int64
+	nextOptionID int64
 }
 
 func newTestPollRepo() *testPollRepo {
 	return &testPollRepo{
-		polls:  make(map[int64]*poll.Poll),
-		opts:   make(map[int64][]poll.Option),
-		nextID: 1,
+		polls:        make(map[int64]*poll.Poll),
+		opts:         make(map[int64][]poll.Option),
+		nextPollID:   1,
+		nextOptionID: 1,
 	}
 }
 
 func (r *testPollRepo) Create(ctx context.Context, p *poll.Poll, options []poll.Option) (int64, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	p.ID = r.nextID
-	r.nextID++
-	p.CreatedAt = time.Now()
-	p.UpdatedAt = p.CreatedAt
+	p.ID = r.nextPollID
+	r.nextPollID++
+	now := time.Now()
+	p.CreatedAt = now
+	p.UpdatedAt = now
 	copyPoll := *p
 	r.polls[p.ID] = &copyPoll
 
 	cloned := make([]poll.Option, len(options))
-	for i, opt := range options {
-		opt.ID = int64(i + 1)
-		opt.PollID = p.ID
-		opt.CreatedAt = time.Now()
-		cloned[i] = opt
+	for i := range options {
+		options[i].ID = r.nextOptionID
+		r.nextOptionID++
+		options[i].PollID = p.ID
+		options[i].CreatedAt = now
+		cloned[i] = options[i]
 	}
 	r.opts[p.ID] = cloned
 	return p.ID, nil
@@ -180,88 +202,435 @@ func (r *testPollRepo) UpdateStatus(ctx context.Context, id int64, status string
 	return nil
 }
 
-type noopVoteRepo struct{}
-
-func (noopVoteRepo) Create(ctx context.Context, v *vote.Vote) error {
+func (r *testPollRepo) Update(ctx context.Context, id int64, input poll.UpdateInput) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	p, ok := r.polls[id]
+	if !ok {
+		return sql.ErrNoRows
+	}
+	if input.Title != nil {
+		p.Title = *input.Title
+	}
+	if input.Description != nil {
+		p.Description = input.Description
+	}
+	if input.StartsAt != nil {
+		p.StartsAt = input.StartsAt
+	}
+	if input.EndsAt != nil {
+		p.EndsAt = input.EndsAt
+	}
+	p.UpdatedAt = time.Now()
 	return nil
 }
 
-func (noopVoteRepo) CountByPoll(ctx context.Context, pollID int64) (map[int64]int64, int64, error) {
-	return map[int64]int64{}, 0, nil
-}
-
-func (noopVoteRepo) AggregatedByPoll(ctx context.Context, pollID int64) (map[int64]int64, int64, error) {
-	return map[int64]int64{}, 0, nil
-}
-
-func (noopVoteRepo) IncrementAggregated(ctx context.Context, pollID, optionID int64) error {
+func (r *testPollRepo) Delete(ctx context.Context, id int64) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, ok := r.polls[id]; !ok {
+		return sql.ErrNoRows
+	}
+	delete(r.polls, id)
+	delete(r.opts, id)
 	return nil
 }
 
-func (noopVoteRepo) GetPollStatus(ctx context.Context, pollID int64) (string, error) {
-	return "active", nil
+func (r *testPollRepo) optionBelongs(pollID, optionID int64) bool {
+	opts := r.opts[pollID]
+	for _, o := range opts {
+		if o.ID == optionID {
+			return true
+		}
+	}
+	return false
 }
 
-func TestLoginAndCreatePoll(t *testing.T) {
+type testVoteRepo struct {
+	mu       sync.Mutex
+	votes    map[int64]map[int64]int64
+	agg      map[int64]map[int64]int64
+	pollRepo *testPollRepo
+}
+
+func newTestVoteRepo(pollRepo *testPollRepo) *testVoteRepo {
+	return &testVoteRepo{
+		votes:    make(map[int64]map[int64]int64),
+		agg:      make(map[int64]map[int64]int64),
+		pollRepo: pollRepo,
+	}
+}
+
+func (r *testVoteRepo) Create(ctx context.Context, v *vote.Vote) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	p, ok := r.pollRepo.polls[v.PollID]
+	if !ok {
+		return vote.ErrPollNotFound
+	}
+	if p.Status != "active" {
+		return vote.ErrPollNotActive
+	}
+	if !r.pollRepo.optionBelongs(v.PollID, v.OptionID) {
+		return vote.ErrOptionNotInPoll
+	}
+	if _, ok := r.votes[v.PollID]; !ok {
+		r.votes[v.PollID] = make(map[int64]int64)
+	}
+	if _, exists := r.votes[v.PollID][v.UserID]; exists {
+		return vote.ErrAlreadyVoted
+	}
+	r.votes[v.PollID][v.UserID] = v.OptionID
+	v.ID = int64(len(r.votes[v.PollID]))
+	v.CreatedAt = time.Now()
+	if p.Status != "active" {
+		return vote.ErrPollNotActive
+	}
+	return nil
+}
+
+func (r *testVoteRepo) CountByPoll(ctx context.Context, pollID int64) (map[int64]int64, int64, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	m := make(map[int64]int64)
+	var total int64
+	for _, optID := range r.votes[pollID] {
+		m[optID]++
+		total++
+	}
+	return m, total, nil
+}
+
+func (r *testVoteRepo) AggregatedByPoll(ctx context.Context, pollID int64) (map[int64]int64, int64, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	agg := r.agg[pollID]
+	res := make(map[int64]int64)
+	var total int64
+	for opt, c := range agg {
+		res[opt] = c
+		total += c
+	}
+	return res, total, nil
+}
+
+func (r *testVoteRepo) IncrementAggregated(ctx context.Context, pollID, optionID int64) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, ok := r.agg[pollID]; !ok {
+		r.agg[pollID] = make(map[int64]int64)
+	}
+	r.agg[pollID][optionID]++
+	return nil
+}
+
+func (r *testVoteRepo) GetPollStatus(ctx context.Context, pollID int64) (string, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	p, ok := r.pollRepo.polls[pollID]
+	if !ok {
+		return "", sql.ErrNoRows
+	}
+	return p.Status, nil
+}
+
+func setupServer(t *testing.T) (*httptest.Server, *testUserRepo, *testPollRepo, *testVoteRepo, func()) {
+	t.Helper()
 	userRepo := newTestUserRepo()
 	pollRepo := newTestPollRepo()
-	voteRepo := noopVoteRepo{}
-
-	pass := "adminpass"
-	hash, _ := bcrypt.GenerateFromPassword([]byte(pass), bcrypt.MinCost)
-	userRepo.seed(&user.User{Email: "admin@test.com", PasswordHash: string(hash), Role: "admin"})
+	voteRepo := newTestVoteRepo(pollRepo)
 
 	userSvc := user.NewService(userRepo)
 	pollSvc := poll.NewService(pollRepo)
 	voteSvc := vote.NewService(voteRepo)
-	jwtMgr := jwtpkg.NewManager("secret")
-	voteCh := make(chan worker.VoteEvent, 10)
+	jwtMgr := jwtpkg.NewManager("secret", "test-issuer")
+	voteCh := make(chan worker.VoteEvent, 100)
 
-	server := httptest.NewServer(NewRouter(userSvc, pollSvc, voteSvc, jwtMgr, voteCh))
-	defer server.Close()
+	server := httptest.NewServer(NewRouter(userSvc, pollSvc, voteSvc, jwtMgr, voteCh, &sql.DB{}))
+	cleanup := func() {
+		server.Close()
+		close(voteCh)
+	}
+	return server, userRepo, pollRepo, voteRepo, cleanup
+}
 
-	loginReq := authRequest{Email: "admin@test.com", Password: pass}
-	body, _ := json.Marshal(loginReq)
-	resp, err := http.Post(server.URL+"/api/v1/auth/login", "application/json", bytes.NewReader(body))
+func seedUserWithPassword(t *testing.T, repo *testUserRepo, email, role, password string) int64 {
+	t.Helper()
+	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.MinCost)
+	if err != nil {
+		t.Fatalf("hash password: %v", err)
+	}
+	repo.seed(&user.User{
+		Email:        email,
+		PasswordHash: string(hash),
+		Role:         role,
+		IsActive:     true,
+	})
+	return repo.byMail[email]
+}
+
+func loginAndToken(t *testing.T, serverURL, email, password string) string {
+	t.Helper()
+	body, _ := json.Marshal(authRequest{Email: email, Password: password})
+	resp, err := http.Post(serverURL+"/api/v1/auth/login", "application/json", bytes.NewReader(body))
 	if err != nil {
 		t.Fatalf("login request failed: %v", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("expected 200 login, got %d", resp.StatusCode)
+		t.Fatalf("login status: %d", resp.StatusCode)
 	}
-	var loginResp map[string]any
-	if err := json.NewDecoder(resp.Body).Decode(&loginResp); err != nil {
-		t.Fatalf("decode login response: %v", err)
+	var payload map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode login: %v", err)
 	}
-	token, ok := loginResp["token"].(string)
-	if !ok || token == "" {
-		t.Fatalf("token missing in response")
+	token, _ := payload["token"].(string)
+	if token == "" {
+		t.Fatalf("token missing")
 	}
+	return token
+}
 
-	createReq := createPollRequest{
-		Title:   "Campus Survey",
-		Options: []string{"Yes", "No"},
-	}
-	payload, _ := json.Marshal(createReq)
-	req, _ := http.NewRequest(http.MethodPost, server.URL+"/api/v1/polls", bytes.NewReader(payload))
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+token)
-
-	createResp, err := http.DefaultClient.Do(req)
+func createPollViaAPI(t *testing.T, serverURL, token string, req createPollRequest) int64 {
+	t.Helper()
+	data, _ := json.Marshal(req)
+	httpReq, _ := http.NewRequest(http.MethodPost, serverURL+"/api/v1/polls", bytes.NewReader(data))
+	httpReq.Header.Set("Authorization", "Bearer "+token)
+	httpReq.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(httpReq)
 	if err != nil {
-		t.Fatalf("create poll request failed: %v", err)
+		t.Fatalf("create poll request: %v", err)
 	}
-	defer createResp.Body.Close()
-	if createResp.StatusCode != http.StatusCreated {
-		t.Fatalf("expected 201 create poll, got %d", createResp.StatusCode)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("expected 201, got %d", resp.StatusCode)
+	}
+	var payload map[string]int64
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode create poll: %v", err)
+	}
+	return payload["id"]
+}
+
+func updatePollStatus(t *testing.T, serverURL, token string, pollID int64, status string) {
+	t.Helper()
+	body, _ := json.Marshal(updateStatusRequest{Status: status})
+	req, _ := http.NewRequest(http.MethodPatch, serverURL+"/api/v1/polls/"+itoa(pollID)+"/status", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("update poll status: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("expected 204 status update, got %d", resp.StatusCode)
+	}
+}
+
+func votePoll(t *testing.T, serverURL, token string, pollID, optionID int64) *http.Response {
+	t.Helper()
+	body, _ := json.Marshal(voteRequest{OptionID: optionID})
+	req, _ := http.NewRequest(http.MethodPost, serverURL+"/api/v1/polls/"+itoa(pollID)+"/vote", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("vote request: %v", err)
+	}
+	return resp
+}
+
+func itoa(v int64) string {
+	return strconv.FormatInt(v, 10)
+}
+
+func decodeError(t *testing.T, resp *http.Response) map[string]string {
+	t.Helper()
+	var payload map[string]string
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode error response: %v", err)
+	}
+	return payload
+}
+
+func TestRBACForUserRole(t *testing.T) {
+	server, userRepo, _, _, cleanup := setupServer(t)
+	defer cleanup()
+
+	seedUserWithPassword(t, userRepo, "admin@test.com", "admin", "pass123")
+	seedUserWithPassword(t, userRepo, "user@test.com", "user", "pass123")
+
+	adminToken := loginAndToken(t, server.URL, "admin@test.com", "pass123")
+	userToken := loginAndToken(t, server.URL, "user@test.com", "pass123")
+
+	// Ensure admin path works for admin
+	createPollViaAPI(t, server.URL, adminToken, createPollRequest{
+		Title:   "Admin poll",
+		Options: []string{"yes", "no"},
+	})
+
+	// User token cannot create poll
+	userPollReq := createPollRequest{Title: "User poll", Options: []string{"a", "b"}}
+	body, _ := json.Marshal(userPollReq)
+	req, _ := http.NewRequest(http.MethodPost, server.URL+"/api/v1/polls", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+userToken)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("rbac create poll: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("expected 403 for user create poll, got %d", resp.StatusCode)
 	}
 
-	var respBody map[string]int64
-	if err := json.NewDecoder(createResp.Body).Decode(&respBody); err != nil {
-		t.Fatalf("decode create poll response: %v", err)
+	// User token cannot change roles
+	roleReq := updateRoleRequest{Role: "admin"}
+	payload, _ := json.Marshal(roleReq)
+	roleHTTPReq, _ := http.NewRequest(http.MethodPatch, server.URL+"/api/v1/users/1/role", bytes.NewReader(payload))
+	roleHTTPReq.Header.Set("Authorization", "Bearer "+userToken)
+	roleHTTPReq.Header.Set("Content-Type", "application/json")
+	roleResp, err := http.DefaultClient.Do(roleHTTPReq)
+	if err != nil {
+		t.Fatalf("rbac update role: %v", err)
 	}
-	if respBody["id"] == 0 {
-		t.Fatalf("expected poll id in response")
+	defer roleResp.Body.Close()
+	if roleResp.StatusCode != http.StatusForbidden {
+		t.Fatalf("expected 403 for role update, got %d", roleResp.StatusCode)
 	}
+}
+
+func TestVoteIdempotencyAndConflicts(t *testing.T) {
+	server, userRepo, pollRepo, _, cleanup := setupServer(t)
+	defer cleanup()
+
+	seedUserWithPassword(t, userRepo, "admin@test.com", "admin", "pass123")
+	seedUserWithPassword(t, userRepo, "user@test.com", "user", "pass123")
+
+	adminToken := loginAndToken(t, server.URL, "admin@test.com", "pass123")
+	userToken := loginAndToken(t, server.URL, "user@test.com", "pass123")
+
+	pollID := createPollViaAPI(t, server.URL, adminToken, createPollRequest{
+		Title:   "Campus Survey",
+		Options: []string{"yes", "no"},
+	})
+	updatePollStatus(t, server.URL, adminToken, pollID, "active")
+
+	opts := pollRepo.opts[pollID]
+	firstResp := votePoll(t, server.URL, userToken, pollID, opts[0].ID)
+	defer firstResp.Body.Close()
+	if firstResp.StatusCode != http.StatusNoContent {
+		t.Fatalf("expected 204 first vote, got %d", firstResp.StatusCode)
+	}
+
+	secondResp := votePoll(t, server.URL, userToken, pollID, opts[1].ID)
+	defer secondResp.Body.Close()
+	if secondResp.StatusCode != http.StatusConflict {
+		t.Fatalf("expected 409 for duplicate vote, got %d", secondResp.StatusCode)
+	}
+}
+
+func TestPollStatusGating(t *testing.T) {
+	server, userRepo, pollRepo, _, cleanup := setupServer(t)
+	defer cleanup()
+
+	seedUserWithPassword(t, userRepo, "admin@test.com", "admin", "pass123")
+	seedUserWithPassword(t, userRepo, "user@test.com", "user", "pass123")
+
+	adminToken := loginAndToken(t, server.URL, "admin@test.com", "pass123")
+	userToken := loginAndToken(t, server.URL, "user@test.com", "pass123")
+
+	pollID := createPollViaAPI(t, server.URL, adminToken, createPollRequest{
+		Title:   "Draft poll",
+		Options: []string{"opt1", "opt2"},
+	})
+	opts := pollRepo.opts[pollID]
+
+	resp := votePoll(t, server.URL, userToken, pollID, opts[0].ID)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400 for draft poll vote, got %d", resp.StatusCode)
+	}
+
+	updatePollStatus(t, server.URL, adminToken, pollID, "closed")
+	respClosed := votePoll(t, server.URL, userToken, pollID, opts[0].ID)
+	defer respClosed.Body.Close()
+	if respClosed.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400 for closed poll vote, got %d", respClosed.StatusCode)
+	}
+}
+
+func TestOptionMustBelongToPoll(t *testing.T) {
+	server, userRepo, pollRepo, _, cleanup := setupServer(t)
+	defer cleanup()
+
+	seedUserWithPassword(t, userRepo, "admin@test.com", "admin", "pass123")
+	seedUserWithPassword(t, userRepo, "user@test.com", "user", "pass123")
+
+	adminToken := loginAndToken(t, server.URL, "admin@test.com", "pass123")
+	userToken := loginAndToken(t, server.URL, "user@test.com", "pass123")
+
+	pollA := createPollViaAPI(t, server.URL, adminToken, createPollRequest{
+		Title:   "Poll A",
+		Options: []string{"A1", "A2"},
+	})
+	pollB := createPollViaAPI(t, server.URL, adminToken, createPollRequest{
+		Title:   "Poll B",
+		Options: []string{"B1", "B2"},
+	})
+	updatePollStatus(t, server.URL, adminToken, pollA, "active")
+	updatePollStatus(t, server.URL, adminToken, pollB, "active")
+
+	optionFromB := pollRepo.opts[pollB][0].ID
+	resp := votePoll(t, server.URL, userToken, pollA, optionFromB)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400 for option not in poll, got %d", resp.StatusCode)
+	}
+	errPayload := decodeError(t, resp)
+	if errPayload["error"] == "" || errPayload["message"] == "" {
+		t.Fatalf("expected structured error payload")
+	}
+}
+
+func TestPollNotFoundPatchAndDelete(t *testing.T) {
+	server, userRepo, _, _, cleanup := setupServer(t)
+	defer cleanup()
+
+	seedUserWithPassword(t, userRepo, "admin@test.com", "admin", "pass123")
+	adminToken := loginAndToken(t, server.URL, "admin@test.com", "pass123")
+
+	body, _ := json.Marshal(updatePollRequest{Title: strPtr("new title")})
+	req, _ := http.NewRequest(http.MethodPatch, server.URL+"/api/v1/polls/9999", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+adminToken)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("patch poll: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("expected 404 for patch not found, got %d", resp.StatusCode)
+	}
+
+	delReq, _ := http.NewRequest(http.MethodDelete, server.URL+"/api/v1/polls/9999", nil)
+	delReq.Header.Set("Authorization", "Bearer "+adminToken)
+	delResp, err := http.DefaultClient.Do(delReq)
+	if err != nil {
+		t.Fatalf("delete poll: %v", err)
+	}
+	defer delResp.Body.Close()
+	if delResp.StatusCode != http.StatusNotFound {
+		t.Fatalf("expected 404 for delete not found, got %d", delResp.StatusCode)
+	}
+	errPayload := decodeError(t, delResp)
+	if errPayload["error"] == "" {
+		t.Fatalf("expected error code in response")
+	}
+}
+
+func strPtr(s string) *string {
+	return &s
 }
