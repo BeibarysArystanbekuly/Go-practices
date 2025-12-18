@@ -63,15 +63,7 @@ func (r *PollRepo) Create(ctx context.Context, p *poll.Poll, options []poll.Opti
 	return p.ID, nil
 }
 
-func (r *PollRepo) GetByID(ctx context.Context, id int64) (*poll.Poll, []poll.Option, error) {
-	p := &poll.Poll{}
-	err := r.db.QueryRowContext(ctx, `
-        SELECT id, title, description, status, starts_at, ends_at, creator_id, created_at, updated_at
-        FROM polls WHERE id = $1
-    `, id).Scan(
-		&p.ID, &p.Title, &p.Description, &p.Status,
-		&p.StartsAt, &p.EndsAt, &p.CreatorID, &p.CreatedAt, &p.UpdatedAt,
-	)
+
 	if err != nil {
 		return nil, nil, err
 	}
